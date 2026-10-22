@@ -48,7 +48,8 @@ fn text_field<'a>(m: &'a mut Meta, k: &str) -> Option<&'a mut String> {
 }
 
 /// Apply preset `fields` to `m`: text fields replace, keywords are added.
-pub fn apply_to(m: &mut Meta, fields: &Value) {
+/// `custom_ns_prefixes` lists the registered namespace prefixes (needed to accept their keys).
+pub fn apply_to(m: &mut Meta, fields: &Value, custom_ns_prefixes: &[String]) {
     for (k, v) in fields.as_object().into_iter().flatten() {
         if k == "copyrightStatus" {
             if let Some(st) = v.as_str().and_then(CopyrightStatus::parse) {
@@ -62,8 +63,27 @@ pub fn apply_to(m: &mut Meta, fields: &Value) {
             }
         } else if let (Some(f), Some(t)) = (text_field(m, k), v.as_str()) {
             *f = t.to_string();
+        } else if is_xmp_other_key(k, custom_ns_prefixes) {
+            match v {
+                Value::String(t) => {
+                    m.xmp_other.insert(k.clone(), t.clone());
+                }
+                Value::Null => {
+                    m.xmp_other.remove(k);
+                }
+                _ => {}
+            }
         }
     }
+}
+
+fn is_xmp_other_key(k: &str, custom_ns_prefixes: &[String]) -> bool {
+    let Some(colon) = k.find(':') else { return false };
+    let (prefix, local) = (&k[..colon], &k[colon + 1..]);
+    if local.is_empty() || !local.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    prefix == "lc" || custom_ns_prefixes.iter().any(|p| p == prefix)
 }
 
 fn list(s: &Session) -> Value {
@@ -73,10 +93,11 @@ fn list(s: &Session) -> Value {
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = "metadata.savePreset";
     let name = str_param(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or_else(|| bad(C, "missing `name`"))?.to_string();
+    let custom_ns_prefixes: Vec<String> = s.custom_namespaces.iter().map(|ns| ns.prefix.clone()).collect();
     let fields = match p.get("fields") {
         Some(Value::Object(o)) => {
-            if let Some(k) = o.keys().find(|k| !FIELDS.contains(&k.as_str())) {
-                return Err(bad(C, format!("unknown field `{k}` ({})", FIELDS.join(", "))));
+            if let Some(k) = o.keys().find(|k| !FIELDS.contains(&k.as_str()) && !is_xmp_other_key(k, &custom_ns_prefixes)) {
+                return Err(bad(C, format!("unknown field `{k}`")));
             }
             if let Some(v) = o.get("copyrightStatus").filter(|v| v.as_str().and_then(CopyrightStatus::parse).is_none()) {
                 return Err(bad(C, format!("copyrightStatus {v}: unknown, copyrighted or publicDomain")));
@@ -97,16 +118,22 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
                     },
                 );
             let mut o = Map::new();
-            for k in only.iter().filter(|k| FIELDS.contains(&k.as_str())) {
-                if k == "keywords" {
-                    if !m.keywords.is_empty() {
-                        o.insert(k.clone(), json!(m.keywords));
+            for k in &only {
+                if FIELDS.contains(&k.as_str()) {
+                    if k == "keywords" {
+                        if !m.keywords.is_empty() {
+                            o.insert(k.clone(), json!(m.keywords));
+                        }
+                    } else if k == "copyrightStatus" {
+                        if !m.copyright_status.is_unknown() {
+                            o.insert(k.clone(), json!(m.copyright_status.id()));
+                        }
+                    } else if let Some(v) = text_field(&mut m, k).filter(|v| !v.trim().is_empty()) {
+                        o.insert(k.clone(), json!(v.clone()));
                     }
-                } else if k == "copyrightStatus" {
-                    if !m.copyright_status.is_unknown() {
-                        o.insert(k.clone(), json!(m.copyright_status.id()));
-                    }
-                } else if let Some(v) = text_field(&mut m, k).filter(|v| !v.trim().is_empty()) {
+                } else if is_xmp_other_key(k, &custom_ns_prefixes)
+                    && let Some(v) = m.xmp_other.get(k).filter(|v| !v.trim().is_empty())
+                {
                     o.insert(k.clone(), json!(v.clone()));
                 }
             }
@@ -147,9 +174,17 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
         .find(|m| m.name.eq_ignore_ascii_case(name))
         .cloned()
         .ok_or_else(|| bad(C, format!("no metadata preset `{name}`")))?;
+    let custom_ns_prefixes: Vec<String> = s.custom_namespaces.iter().map(|ns| ns.prefix.clone()).collect();
     let mut params = Map::new();
     for (k, v) in preset.fields.as_object().into_iter().flatten() {
-        params.insert(if k == "keywords" { "addKeywords".into() } else { k.clone() }, v.clone());
+        if k == "keywords" {
+            params.insert("addKeywords".into(), v.clone());
+        } else if is_xmp_other_key(k, &custom_ns_prefixes) {
+            // Custom XMP fields go directly as-is; photo.setMeta handles them.
+            params.insert(k.clone(), v.clone());
+        } else {
+            params.insert(k.clone(), v.clone());
+        }
     }
     if let Some(ids) = p.get("ids") {
         params.insert("ids".into(), ids.clone());

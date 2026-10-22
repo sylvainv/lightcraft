@@ -1279,8 +1279,9 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
                 Ok(r) => r,
                 Err(e) => return Some(Err(e.to_string())),
             };
-            let title = app.session.active().and_then(|id| app.session.catalog.photo(id)).map(|p| p.file_name.clone()).unwrap_or_default();
-            app.ui.dialog = Some(Dialog::AllMetadata { title, rows: r, search: String::new() });
+            let active = app.session.active();
+            let title = active.and_then(|id| app.session.catalog.photo(id)).map(|p| p.file_name.clone()).unwrap_or_default();
+            app.ui.dialog = Some(Dialog::AllMetadata { title, rows: r, search: String::new(), photo_id: active });
             Ok(Value::Null)
         }
         "dialog.smartAlbum" => {
@@ -1557,6 +1558,30 @@ pub fn run_ui_command(app: &mut LightcraftApp, id: &str, p: &Value) -> Option<Re
         }
         "app.quit" => {
             app.ui.quit = true;
+            Ok(Value::Null)
+        }
+        "metadata.importNamespace" => {
+            let path = match p.get("path").and_then(Value::as_str) {
+                Some(path) => path.trim().to_string(),
+                None => {
+                    let req = PickRequest::file(crate::i18n::tr("Import XMP Namespace Schema"), "XML", &["xml"]);
+                    match crate::pick::ask(app, id, p, "path", req, |s| s.pick_files.as_mut().map(|f| f())) {
+                        Picked::Now(paths) => match paths.first() {
+                            Some(path) => path.trim().to_string(),
+                            None => return Some(Ok(Value::Null)),
+                        },
+                        Picked::Later => return Some(Ok(Value::Null)),
+                        Picked::Unavailable => return Some(Err("no file dialog on this platform; supply path".into())),
+                    }
+                }
+            };
+            if path.is_empty() {
+                return Some(Err("metadata.importNamespace: path is empty".into()));
+            }
+            match app.session.execute("metadata.importNamespace", &json!({"path": path})) {
+                Ok(_) => app.toast(&ctx, crate::i18n::tr("Namespace imported")),
+                Err(e) => app.toast(&ctx, e.to_string()),
+            }
             Ok(Value::Null)
         }
         "dialog.saveMetadataPreset" => {

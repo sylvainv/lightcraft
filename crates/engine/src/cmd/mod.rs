@@ -31,6 +31,7 @@ mod masks;
 mod merge;
 pub mod metadata;
 pub mod missing;
+pub mod namespaces;
 mod organize;
 mod prefs;
 mod preset_files;
@@ -170,6 +171,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(recheck::specs());
         v.extend(sync::specs());
         v.extend(metadata::specs());
+        v.extend(namespaces::specs());
         v.extend(geocode::specs());
         v.extend(filters::specs());
         v.extend(denoise::specs());
@@ -191,6 +193,20 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
 /// The call names its target photos (`ids` or `id`, not null) instead of using the selection.
 pub(crate) fn names_photos(p: &Value) -> bool {
     ["ids", "id"].iter().any(|k| p.get(k).is_some_and(|v| !v.is_null()))
+}
+
+/// Returns `true` for a valid writable custom XMP key (`lc:Name` or `prefix:Name` for a
+/// registered namespace). The local name must be non-empty ASCII alphanumeric + `_`.
+pub(crate) fn is_custom_key(k: &str, s: &Session) -> bool {
+    let Some(colon) = k.find(':') else { return false };
+    let (prefix, local) = (&k[..colon], &k[colon + 1..]);
+    if local.is_empty() || !local.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return false;
+    }
+    if prefix == "lc" {
+        return true;
+    }
+    s.custom_namespaces.iter().any(|ns| ns.prefix == prefix)
 }
 
 pub(crate) fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {

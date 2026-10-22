@@ -319,6 +319,8 @@ pub struct Session {
     pub print_templates: Vec<print::template::PrintTemplate>,
     /// Metadata presets (`metadata.*`), persisted in prefs.json.
     pub metadata_presets: Vec<cmd::metadata::MetadataPreset>,
+    /// Registered custom XMP namespaces (`metadata.importNamespace`), persisted in prefs.json.
+    pub custom_namespaces: Vec<cmd::namespaces::CustomNamespace>,
     /// Saved filter-bar settings (`filter.*`), persisted in prefs.json.
     pub filter_presets: Vec<cmd::filters::FilterPreset>,
     /// The user's point-curve presets (`curve.*`; built-ins: [`cmd::curves::builtin_presets`]),
@@ -477,6 +479,7 @@ impl Session {
             print: Default::default(),
             print_templates: Vec::new(),
             metadata_presets: Vec::new(),
+            custom_namespaces: Vec::new(),
             filter_presets: Vec::new(),
             curve_presets: Vec::new(),
             mask_effects: Vec::new(),

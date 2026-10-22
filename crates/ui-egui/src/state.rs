@@ -1115,6 +1115,7 @@ pub enum Dialog {
         title: String,
         rows: serde_json::Value,
         search: String,
+        photo_id: Option<lightcraft_catalog::PhotoId>,
     },
     /// Create (`id` None) or edit a smart album's rules.
     SmartRules {

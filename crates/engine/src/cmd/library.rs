@@ -4,7 +4,7 @@
 use lightcraft_catalog::{Album, AlbumId, ColorLabel, CopyrightStatus, Filter, Flag, GroupBy, Op, PhotoId, Sort, SortKey};
 use serde_json::{Value, json};
 
-use super::{CommandSpec, always, bad, bool_or, cmd, has_active, has_library_selection, has_selection, ok, str_param};
+use super::{CommandSpec, always, bad, bool_or, cmd, has_active, has_library_selection, has_selection, is_custom_key, ok, str_param};
 use crate::{LibrarySource, Result, Selection, Session};
 
 fn select_after_deletion(s: &mut Session, before: &[PhotoId]) {
@@ -999,6 +999,21 @@ pub fn specs() -> Vec<CommandSpec> {
                     for k in strs("removeKeywords").unwrap_or_default() {
                         let k = clean(&k);
                         m.keywords.retain(|x| !same(&clean(x), &k));
+                    }
+                    // Custom XMP fields: any key matching `prefix:LocalName` where prefix is
+                    // "lc" or a registered namespace. String value sets; null removes.
+                    for (k, v) in p.as_object().into_iter().flatten() {
+                        if is_custom_key(k, s) {
+                            match v {
+                                Value::String(t) => {
+                                    m.xmp_other.insert(k.clone(), t.clone());
+                                }
+                                Value::Null => {
+                                    m.xmp_other.remove(k.as_str());
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                     ops.push(Op::SetMeta { id, meta: Box::new(m) });
                 }

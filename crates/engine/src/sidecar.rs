@@ -143,6 +143,8 @@ pub struct SidecarData {
     /// Actionable diagnostics for foreign develop settings that were not fully carried over.
     /// These are surfaced in the photo import report and never persisted in the catalog.
     pub warnings: Vec<crate::import::ImportWarning>,
+    /// Non-standard XMP properties: key = `prefix:LocalName`, value = first value.
+    pub custom_xmp: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -266,6 +268,36 @@ pub fn parse_sidecar(xmp: &str, target: crate::crs::Target) -> std::result::Resu
         }
         None => None,
     };
+
+    // Collect non-standard XMP properties. Standard/internal prefixes are filtered out;
+    // lc:settings/flag/location are handled above and excluded from xmp_other.
+    const SKIP_PREFIXES: &[&str] = &[
+        "dc:",
+        "xmp:",
+        "exif:",
+        "tiff:",
+        "photoshop:",
+        "Iptc4xmpCore:",
+        "xmpRights:",
+        "xmpMM:",
+        "crs:",
+        "lr:",
+        "aux:",
+        "mwg-rs:",
+        "rdf:",
+        "stArea:",
+        "stDim:",
+        "xmpDM:",
+        "MicrosoftPhoto:",
+    ];
+    const SKIP_EXACT: &[&str] = &["lc:settings", "lc:flag", "lc:location"];
+    out.custom_xmp = d
+        .properties
+        .iter()
+        .filter(|(k, _)| !SKIP_PREFIXES.iter().any(|p| k.starts_with(p)) && !SKIP_EXACT.contains(&k.as_str()))
+        .map(|(k, v)| (k.clone(), v.first().cloned().unwrap_or_default()))
+        .collect();
+
     Ok(out)
 }
 
@@ -312,6 +344,9 @@ pub fn merge_into(p: &mut Photo, sc: &SidecarData, now: &str) -> bool {
     if let Some(r) = &sc.regions {
         m.regions = r.clone();
     }
+    if !sc.custom_xmp.is_empty() {
+        m.xmp_other = sc.custom_xmp.clone();
+    }
     let develop = match &sc.develop {
         Some(DevelopPatch::Full(s)) => (**s).clone(),
         Some(DevelopPatch::Partial(v)) => {
@@ -345,12 +380,17 @@ impl SidecarData {
 /// The sidecar packet for a photo; the colour label is written by its name in `cat` (custom
 /// label names included, as other editors do).
 pub fn sidecar_packet(p: &Photo, cat: &lightcraft_catalog::Catalog) -> String {
-    sidecar_packet_with(p, cat, false)
+    sidecar_packet_with(p, cat, false, &[])
 }
 
 /// [`sidecar_packet`], without any location (GPS, sublocation, city, state, country) when
 /// `remove_location` is set (an export with "Remove location info").
-pub fn sidecar_packet_with(p: &Photo, cat: &lightcraft_catalog::Catalog, remove_location: bool) -> String {
+pub fn sidecar_packet_with(
+    p: &Photo,
+    cat: &lightcraft_catalog::Catalog,
+    remove_location: bool,
+    custom_namespaces: &[crate::cmd::namespaces::CustomNamespace],
+) -> String {
     let nz = |s: &str| (!s.trim().is_empty()).then(|| s.to_string());
     let meta = lightcraft_meta::Metadata {
         software: Some("LightCraft".into()),
@@ -388,7 +428,29 @@ pub fn sidecar_packet_with(p: &Photo, cat: &lightcraft_catalog::Catalog, remove_
     if !remove_location && !p.meta.location.trim().is_empty() {
         lc.push(("location", p.meta.location.as_str()));
     }
-    lightcraft_meta::write_xmp_lc(&meta, &lc)
+    // Append custom lc: properties from xmp_other.
+    let custom_lc: Vec<(String, String)> =
+        p.meta.xmp_other.iter().filter(|(k, _)| k.starts_with("lc:")).map(|(k, v)| (k["lc:".len()..].to_string(), v.clone())).collect();
+    let lc_refs: Vec<(&str, &str)> = custom_lc.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    lc.extend_from_slice(&lc_refs);
+
+    // Build extra namespace entries from registered namespaces + xmp_other.
+    let extra_ns: Vec<(String, String, Vec<(String, String)>)> = custom_namespaces
+        .iter()
+        .filter_map(|ns| {
+            let prefix_colon = format!("{}:", ns.prefix);
+            let props: Vec<(String, String)> = p
+                .meta
+                .xmp_other
+                .iter()
+                .filter(|(k, _)| k.starts_with(&prefix_colon))
+                .map(|(k, v)| (k[prefix_colon.len()..].to_string(), v.clone()))
+                .collect();
+            if props.is_empty() { None } else { Some((ns.prefix.clone(), ns.uri.clone(), props)) }
+        })
+        .collect();
+
+    if extra_ns.is_empty() { lightcraft_meta::write_xmp_lc(&meta, &lc) } else { lightcraft_meta::write_xmp_lc_extra(&meta, &lc, &extra_ns) }
 }
 
 /// The properties LightCraft writes and owns in a sidecar: replaced on every save (removed when
@@ -456,8 +518,9 @@ pub struct SidecarSaved {
 }
 
 /// The new contents for the sidecar at `path`: `fresh` merged into the existing file, if any.
+/// `extra_owned` adds wildcard patterns (e.g. `"film:*"`) for registered custom namespaces.
 /// Returns (contents, merged, backup).
-fn sidecar_contents(path: &Path, fresh: String, stamp: &str) -> std::io::Result<(String, bool, Option<PathBuf>)> {
+fn sidecar_contents(path: &Path, fresh: String, stamp: &str, extra_owned: &[String]) -> std::io::Result<(String, bool, Option<PathBuf>)> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((fresh, false, None)),
@@ -467,7 +530,14 @@ fn sidecar_contents(path: &Path, fresh: String, stamp: &str) -> std::io::Result<
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok((fresh, false, None));
     }
-    let rules = lightcraft_meta::MergeRules { owned: OWNED, owned_if_present: OWNED_IF_STATED };
+    // Build a merged owned slice combining the static list and dynamic registered-namespace prefixes.
+    let owned_strs: Vec<&str>;
+    let rules = if extra_owned.is_empty() {
+        lightcraft_meta::MergeRules { owned: OWNED, owned_if_present: OWNED_IF_STATED }
+    } else {
+        owned_strs = OWNED.iter().copied().chain(extra_owned.iter().map(String::as_str)).collect();
+        lightcraft_meta::MergeRules { owned: &owned_strs, owned_if_present: OWNED_IF_STATED }
+    };
     match std::str::from_utf8(&bytes)
         .map_err(|e| e.to_string())
         .and_then(|old| lightcraft_meta::merge_xmp(old, &fresh, rules).map_err(|e| e.to_string()))
@@ -754,7 +824,10 @@ impl Session {
         self.validate_sidecar_packets_for_paths(std::slice::from_ref(&path), &crate::rename::RealFs)?;
         let p = self.catalog.photo(id).ok_or(lightcraft_catalog::CatalogError::NoPhoto(id))?;
         let err = |e: std::io::Error| EngineError::Other(format!("{}: {e}", path.display()));
-        let (data, merged, backup) = sidecar_contents(&path, sidecar_packet(p, &self.catalog), &(self.clock)()).map_err(err)?;
+        // Build dynamic owned-property patterns for registered namespaces (e.g. "film:*").
+        let extra_owned: Vec<String> = self.custom_namespaces.iter().map(|ns| format!("{}:*", ns.prefix)).collect();
+        let packet = sidecar_packet_with(p, &self.catalog, false, &self.custom_namespaces);
+        let (data, merged, backup) = sidecar_contents(&path, packet, &(self.clock)(), &extra_owned).map_err(err)?;
         write_atomic(&path, data.as_bytes()).map_err(err)?;
         self.note_sidecar_write(&path, data.as_bytes());
         Ok(SidecarSaved { path, merged, backup })

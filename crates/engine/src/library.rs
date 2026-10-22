@@ -218,6 +218,8 @@ struct PrefsFile {
     print_templates: Vec<crate::print::template::PrintTemplate>,
     /// Metadata presets.
     metadata_presets: Vec<crate::cmd::metadata::MetadataPreset>,
+    /// Registered custom XMP namespaces.
+    custom_namespaces: Vec<crate::cmd::namespaces::CustomNamespace>,
     /// Filter presets.
     filter_presets: Vec<crate::cmd::filters::FilterPreset>,
     /// Point-curve presets.
@@ -501,6 +503,7 @@ impl Session {
         self.export_presets = prefs.export_presets;
         self.print_templates = prefs.print_templates;
         self.metadata_presets = prefs.metadata_presets;
+        self.custom_namespaces = prefs.custom_namespaces;
         self.filter_presets = prefs.filter_presets;
         self.curve_presets = prefs.curve_presets;
         self.mask_effects = prefs.mask_effects;
@@ -768,6 +771,7 @@ impl Session {
             export_presets: self.export_presets.clone(),
             print_templates: self.print_templates.clone(),
             metadata_presets: self.metadata_presets.clone(),
+            custom_namespaces: self.custom_namespaces.clone(),
             filter_presets: self.filter_presets.clone(),
             curve_presets: self.curve_presets.clone(),
             mask_effects: self.mask_effects.clone(),

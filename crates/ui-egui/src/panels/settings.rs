@@ -365,6 +365,30 @@ fn import_tab(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
             let _ = app.run("library.xmpPreferences", json!({"naming": naming}));
         }
     });
+    // Custom metadata namespace registry
+    heading(ui, t, crate::i18n::tr("Custom Metadata Namespaces"));
+    hint(ui, t, crate::i18n::tr("Import an XML schema file to register a custom metadata namespace (e.g. film metadata). Registered namespaces become writable in the All Metadata dialog."));
+    let namespaces: Vec<_> = app.session.custom_namespaces.iter().map(|ns| (ns.uri.clone(), ns.prefix.clone(), ns.label.clone())).collect();
+    for (uri, prefix, label) in &namespaces {
+        let row_label = format!("{label} ({prefix}:)");
+        row(ui, t, &row_label, |ui| {
+            register(ui.ctx(), format!("settings.ns.{prefix}"), ui.max_rect());
+            if ui.small_button(crate::i18n::tr("Remove")).clicked() {
+                let _ = app.run("metadata.deleteNamespace", json!({"prefix": prefix}));
+            }
+            ui.label(RichText::new(uri.as_str()).color(t.text_dim).small());
+        });
+    }
+    if !cfg!(target_arch = "wasm32") {
+        row(ui, t, "", |ui| {
+            let can = app.services.pick_files.is_some();
+            let r = ui.add_enabled(can, egui::Button::new(crate::i18n::tr("Import Schema…")));
+            register(ui.ctx(), "button:importNamespaceSchema", r.rect);
+            if r.clicked() {
+                let _ = app.run("metadata.importNamespace", json!({}));
+            }
+        });
+    }
     if !cfg!(target_arch = "wasm32") {
         heading(ui, t, crate::i18n::tr("Cameras and Cards"));
         let mut on_card = d.show_on_card;

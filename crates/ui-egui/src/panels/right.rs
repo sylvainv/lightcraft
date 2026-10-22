@@ -823,6 +823,19 @@ fn info(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     });
 }
 
+/// Turns a camelCase/PascalCase XMP local name into a spaced label (`FilmStock` → `Film Stock`).
+pub(crate) fn local_name_to_label(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, c) in name.char_indices() {
+        if i > 0 && c.is_uppercase() {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
+
 /// The camera card at the top of Info: camera, lens, size · file size and format, then the
 /// capture settings.
 fn camera_card(ui: &mut egui::Ui, p: &lightcraft_catalog::Photo) {

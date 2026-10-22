@@ -396,7 +396,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
                         ui.ctx().copy_text(text);
                     }
                 }
-                Dialog::AllMetadata { title, rows, search } => {
+                Dialog::AllMetadata { title, rows, search, photo_id } => {
                     ui.label(egui::RichText::new(title.as_str()).color(t.text_label));
                     let r = crate::widgets::named(ui.add(egui::TextEdit::singleline(search).hint_text(crate::i18n::tr("Filter fields")).desired_width(f32::INFINITY)), crate::i18n::tr("Filter fields"));
                     crate::widgets::register(ui.ctx(), "field:metadataSearch", r.rect);
@@ -423,8 +423,25 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
                     if !xmp.is_empty() {
                         groups.push(("XMP".into(), xmp));
                     }
+
+                    // Live custom fields from the catalog (lc: and registered namespaces).
+                    let pid = *photo_id;
+                    let custom: Vec<(String, String, bool)> = pid
+                        .and_then(|id| app.session.catalog.photo(id))
+                        .map(|ph| {
+                            let reg: Vec<&str> = app.session.custom_namespaces.iter().map(|ns| ns.prefix.as_str()).collect();
+                            let is_writable = |k: &str| -> bool {
+                                k.split_once(':').is_some_and(|(pfx, _)| pfx == "lc" || reg.iter().any(|p| *p == pfx))
+                            };
+                            ph.meta.xmp_other.iter()
+                                .filter(|(k, v)| keep(k.as_str(), v.as_str()))
+                                .map(|(k, v)| (k.clone(), v.clone(), is_writable(k)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
                     egui::ScrollArea::vertical().max_height(list_height(ui, 440.0)).auto_shrink([false, true]).show(ui, |ui| {
-                        if groups.is_empty() {
+                        if groups.is_empty() && custom.is_empty() {
                             ui.label(egui::RichText::new(crate::i18n::tr(rows["note"].as_str().unwrap_or("No metadata found"))).color(t.text_dim));
                         }
                         for (g, list) in &groups {
@@ -437,6 +454,84 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context) {
                                     ui.end_row();
                                 }
                             });
+                        }
+
+                        // Custom Fields section — editable, always shown when a photo is open.
+                        if pid.is_some() {
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(crate::i18n::tr("Custom Fields")).font(t.semibold(12.5)).color(t.text));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    // "Save as Preset" — only when there are writable fields.
+                                    if custom.iter().any(|(_, _, w)| *w) {
+                                        if ui.small_button(crate::i18n::tr("Save as Preset…")).clicked() {
+                                            let only: Vec<String> = custom.iter().filter(|(_, _, w)| *w).map(|(k, _, _)| k.clone()).collect();
+                                            let _ = app.run("metadata.savePreset", json!({"only": only}));
+                                        }
+                                    }
+                                });
+                            });
+
+                            // Editable writable fields.
+                            for (key, val, writable) in &custom {
+                                let local = key.split_once(':').map(|(_, l)| l).unwrap_or(key.as_str());
+                                let label = crate::panels::right::local_name_to_label(local);
+                                if *writable {
+                                    ui.horizontal(|ui| {
+                                        let w = ui.available_width();
+                                        ui.set_width(w - 28.0);
+                                        let tf_id = format!("cf:{key}");
+                                        let mut v = val.clone();
+                                        let r = crate::text_field::TextField::singleline(
+                                            &tf_id,
+                                            &mut v,
+                                        ).width(f32::INFINITY).show(ui);
+                                        if r.committed() {
+                                            let _ = app.run("photo.setMeta", json!({key.as_str(): v}));
+                                        }
+                                        ui.label(egui::RichText::new(&label).color(t.text_dim));
+                                    });
+                                    let key_del = key.clone();
+                                    if crate::widgets::icon_button(ui, &format!("cf-del:{key}"), crate::icons::Icon::Close, egui::vec2(20.0, 20.0), false, true, crate::i18n::tr("Remove field")).clicked() {
+                                        let _ = app.run("photo.setMeta", json!({key_del.as_str(): serde_json::Value::Null}));
+                                    }
+                                } else {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(&label).color(t.text_dim));
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(egui::RichText::new(val.as_str()).color(t.text_dim));
+                                        });
+                                    });
+                                }
+                            }
+
+                            // "Add Field" row.
+                            let add_id = egui::Id::new("cf:add-name");
+                            let mut new_name: String = ui.data(|d| d.get_temp(add_id)).unwrap_or_default();
+                            let editing = !new_name.is_empty() || ui.data(|d| d.get_temp::<bool>(egui::Id::new("cf:adding"))).unwrap_or_default();
+                            ui.add_space(4.0);
+                            if editing {
+                                let r = crate::text_field::TextField::singleline("cf:new-name", &mut new_name).hint("Field name (e.g. FilmStock)").width(200.0).show(ui);
+                                ui.data_mut(|d| d.insert_temp(add_id, new_name.clone()));
+                                if r.committed() {
+                                    let trimmed = new_name.trim().to_string();
+                                    let key = if trimmed.contains(':') { trimmed.clone() } else { format!("lc:{trimmed}") };
+                                    let valid = key.split_once(':').is_some_and(|(_, local)| {
+                                        !local.is_empty() && local.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                                    });
+                                    if valid {
+                                        let existing = pid.and_then(|id| app.session.catalog.photo(id)).is_some_and(|ph| ph.meta.xmp_other.contains_key(&key));
+                                        if !existing {
+                                            let _ = app.run("photo.setMeta", json!({key.as_str(): ""}));
+                                        }
+                                    }
+                                    ui.data_mut(|d| { d.remove::<String>(add_id); d.insert_temp(egui::Id::new("cf:adding"), false); });
+                                } else if r.cancelled() || r.response.lost_focus() {
+                                    ui.data_mut(|d| { d.remove::<String>(add_id); d.insert_temp(egui::Id::new("cf:adding"), false); });
+                                }
+                            } else if ui.small_button(crate::i18n::tr("+ Add Field")).clicked() {
+                                ui.data_mut(|d| d.insert_temp(egui::Id::new("cf:adding"), true));
+                            }
                         }
                     });
                 }

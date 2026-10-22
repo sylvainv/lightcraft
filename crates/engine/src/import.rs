@@ -350,7 +350,8 @@ pub fn apply_import_defaults(s: &Session, p: &mut Photo) {
         p.meta.creator = d.creator.trim().to_string();
     }
     if let Some(mp) = d.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
-        crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);
+        let custom_ns_prefixes: Vec<String> = s.custom_namespaces.iter().map(|ns| ns.prefix.clone()).collect();
+        crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields, &custom_ns_prefixes);
     }
     let base = p.camera_defaults();
     // a raw shown from its embedded JPEG gets the rendered-file default, not the raw one
@@ -1440,7 +1441,8 @@ pub fn commit_prepared(s: &mut Session, opts: &ImportOptions, now: &str, prepare
                     }));
                 }
                 if let Some(mp) = opts.metadata_preset.as_ref().and_then(|n| s.metadata_presets.iter().find(|m| m.name.eq_ignore_ascii_case(n))) {
-                    crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields);
+                    let custom_ns_prefixes: Vec<String> = s.custom_namespaces.iter().map(|ns| ns.prefix.clone()).collect();
+                    crate::cmd::metadata::apply_to(&mut p.meta, &mp.fields, &custom_ns_prefixes);
                 }
                 for k in &opts.keywords {
                     let k = lightcraft_catalog::keywords::clean(k);

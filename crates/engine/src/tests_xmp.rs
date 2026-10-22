@@ -1328,3 +1328,99 @@ fn a_failed_auto_write_waits_and_is_written_on_retry() {
     std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _ = std::fs::remove_dir_all(&src);
 }
+
+#[test]
+fn custom_xmp_parse_sidecar_populates_xmp_other_and_filters_standard_fields() {
+    let xmp = r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:lc="http://ns.lightcraft.app/lc/1.0/"
+    xmlns:film="https://example.com/film/1.0/">
+   <dc:title>Test Photo</dc:title>
+   <lc:flag>pick</lc:flag>
+   <lc:settings>{}</lc:settings>
+   <lc:Roll>42</lc:Roll>
+   <film:Stock>Kodak Portra 400</film:Stock>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>"#;
+
+    let sd = crate::sidecar::parse_sidecar(xmp, crate::crs::Target::Rendered).expect("parse ok");
+    // lc:Roll should appear (it's not in SKIP_EXACT)
+    assert_eq!(sd.custom_xmp.get("lc:Roll").map(String::as_str), Some("42"));
+    // film:Stock should appear
+    assert_eq!(sd.custom_xmp.get("film:Stock").map(String::as_str), Some("Kodak Portra 400"));
+    // lc:settings and lc:flag are excluded from xmp_other
+    assert!(!sd.custom_xmp.contains_key("lc:settings"));
+    assert!(!sd.custom_xmp.contains_key("lc:flag"));
+    // standard fields are excluded
+    assert!(!sd.custom_xmp.contains_key("dc:title"));
+}
+
+#[test]
+fn custom_xmp_lc_fields_round_trip_through_sidecar_packet() {
+    let mut m = lightcraft_catalog::Photo::new(
+        lightcraft_catalog::PhotoId(1),
+        lightcraft_catalog::Source::Demo { scene: 0 },
+        "test.jpg",
+        "JPEG",
+        16,
+        16,
+        "2026-10-01T00:00:00",
+    );
+    m.meta.xmp_other.insert("lc:FilmStock".into(), "Kodak Portra 400".into());
+    m.meta.xmp_other.insert("lc:Roll".into(), "2026-A-047".into());
+
+    let packet = crate::sidecar::sidecar_packet(&m, &lightcraft_catalog::Catalog::new());
+    // Both lc: fields should be present in the XMP packet
+    assert!(packet.contains("<lc:FilmStock>Kodak Portra 400</lc:FilmStock>"), "packet: {packet}");
+    assert!(packet.contains("<lc:Roll>2026-A-047</lc:Roll>"), "packet: {packet}");
+
+    // Parse it back
+    let sd = crate::sidecar::parse_sidecar(&packet, crate::crs::Target::Rendered).expect("parse ok");
+    assert_eq!(sd.custom_xmp.get("lc:FilmStock").map(String::as_str), Some("Kodak Portra 400"));
+    assert_eq!(sd.custom_xmp.get("lc:Roll").map(String::as_str), Some("2026-A-047"));
+}
+
+#[test]
+fn custom_xmp_set_meta_lc_field_null_removes_it() {
+    let lib = temp_dir("custom-xmp-null-lib");
+    let src_dir = temp_dir("custom-xmp-null-src");
+    write_png(&src_dir.join("photo.png"), 1);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src_dir.join("photo.png").to_string_lossy()]})).unwrap();
+    let id = only(&s);
+
+    s.execute("library.select", &json!({"ids": [id.0]})).unwrap();
+    s.execute("photo.setMeta", &json!({"lc:Roll": "2026-A-047"})).unwrap();
+    assert_eq!(s.catalog.photo(id).unwrap().meta.xmp_other.get("lc:Roll").map(String::as_str), Some("2026-A-047"));
+
+    s.execute("photo.setMeta", &json!({"lc:Roll": null})).unwrap();
+    assert!(!s.catalog.photo(id).unwrap().meta.xmp_other.contains_key("lc:Roll"));
+}
+
+#[test]
+fn custom_xmp_metadata_preset_save_and_apply_lc_fields() {
+    let lib = temp_dir("custom-xmp-preset-lib");
+    let src_dir = temp_dir("custom-xmp-preset-src");
+    write_png(&src_dir.join("photo1.png"), 1);
+    write_png(&src_dir.join("photo2.png"), 2);
+    let mut s = Session::new().with_fs();
+    s.open_library(&lib, false).unwrap();
+    s.execute("library.import", &json!({"paths": [src_dir.to_string_lossy()]})).unwrap();
+    // Select photo1 and set a custom field, then save as preset.
+    let ids: Vec<PhotoId> = s.catalog.photos().map(|p| p.id).collect();
+    let id1 = ids[0];
+    let id2 = ids[1];
+    s.execute("library.select", &json!({"ids": [id1.0]})).unwrap();
+    s.execute("photo.setMeta", &json!({"lc:FilmStock": "Kodak Portra 400"})).unwrap();
+    s.execute("metadata.savePreset", &json!({"name": "Portra 400", "fields": {"lc:FilmStock": "Kodak Portra 400"}})).unwrap();
+
+    // Apply the preset to the second photo.
+    s.execute("metadata.applyPreset", &json!({"name": "Portra 400", "ids": [id2.0]})).unwrap();
+    assert_eq!(s.catalog.photo(id2).unwrap().meta.xmp_other.get("lc:FilmStock").map(String::as_str), Some("Kodak Portra 400"));
+}

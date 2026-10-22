@@ -1732,7 +1732,7 @@ fn prepare_guarded(
         let work = Work::File {
             path: path.clone(),
             read: session.media.file_bytes.clone(),
-            packet: crate::sidecar::sidecar_packet_with(p, &session.catalog, removes_location(p, &session.catalog, o)),
+            packet: crate::sidecar::sidecar_packet_with(p, &session.catalog, removes_location(p, &session.catalog, o), &session.custom_namespaces),
             dng,
             quality: o.quality,
             lossy_edge: o.resize.is_some().then(|| {

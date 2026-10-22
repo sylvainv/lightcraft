@@ -580,6 +580,14 @@ pub fn write_xmp(meta: &Metadata, lc_settings: Option<&str>) -> String {
 
 /// Like [`write_xmp`], with any number of simple `lc:<name>` properties (e.g. `settings`, `flag`).
 pub fn write_xmp_lc(meta: &Metadata, lc: &[(&str, &str)]) -> String {
+    write_xmp_lc_extra(meta, lc, &[])
+}
+
+/// Like [`write_xmp_lc`], also writing properties for additional custom namespaces.
+///
+/// `extra_ns` — `(prefix, uri, properties)` tuples; `properties` are `(local_name, value)` pairs.
+/// Properties whose local name is not ASCII alphanumeric + `_` are silently skipped.
+pub fn write_xmp_lc_extra(meta: &Metadata, lc: &[(&str, &str)], extra_ns: &[(String, String, Vec<(String, String)>)]) -> String {
     let mut simple: Vec<(&str, String)> = Vec::new();
     let mut push = |k: &'static str, v: Option<String>| {
         if let Some(v) = v {
@@ -631,6 +639,9 @@ pub fn write_xmp_lc(meta: &Metadata, lc: &[(&str, &str)]) -> String {
     for (p, u) in NAMESPACES.iter().skip(2).filter(|(p, _)| *p != "crs") {
         x.push_str(&format!("\n    xmlns:{p}=\"{u}\""));
     }
+    for (prefix, uri, _props) in extra_ns {
+        x.push_str(&format!("\n    xmlns:{prefix}=\"{uri}\""));
+    }
     x.push_str(">\n");
     for (k, v) in &simple {
         x.push_str(&format!("   <{k}>{}</{k}>\n", escape(xml_safe(v))));
@@ -639,6 +650,13 @@ pub fn write_xmp_lc(meta: &Metadata, lc: &[(&str, &str)]) -> String {
         if !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             // element content: quotes needn't be escaped, which keeps the JSON readable
             x.push_str(&format!("   <lc:{k}>{}</lc:{k}>\n", partial_escape(xml_safe(v))));
+        }
+    }
+    for (prefix, _uri, props) in extra_ns {
+        for (name, val) in props {
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                x.push_str(&format!("   <{prefix}:{name}>{}</{prefix}:{name}>\n", escape(xml_safe(val))));
+            }
         }
     }
     let array = |x: &mut String, k: &str, kind: &str, items: &[String], lang: bool| {
